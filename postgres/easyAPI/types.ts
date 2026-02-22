@@ -6,7 +6,8 @@ export enum APIOperation {
     UPDATE,
     DELETE,
     LOGIN,
-    LOGOUT
+    LOGOUT,
+    AGGREGATE
 }
 
 export enum AuthState {
@@ -61,6 +62,26 @@ export type PaginationResult = {
     hasMore: boolean;     // Whether more records exist
 };
 
+/**
+ * Aggregate field specification
+ * Defines what aggregate function to apply to which field
+ */
+export type AggregateField = {
+    field: string;        // JSONB field path (e.g. 'timestamp', 'ticker')
+    function: 'count' | 'countDistinct' | 'min' | 'max' | 'sum' | 'avg';
+    alias: string;        // Name for the result column
+};
+
+/**
+ * Options for aggregate queries
+ */
+export type AggregateOptions = {
+    groupBy: string[];           // Fields to group by
+    aggregates: AggregateField[]; // Aggregate functions to apply
+    orderBy?: string;            // Field or alias to order by
+    orderDirection?: 'ASC' | 'DESC';
+};
+
 export type APIRequest = {
     operation?: APIOperation | string;
     model?: string;
@@ -68,6 +89,7 @@ export type APIRequest = {
     query?: any;
     token?: string;
     meta?: RequestMeta;
+    aggregate?: AggregateOptions;
 };
 
 export type DataPreReadListener = (user: any, query: any) => Promise<ListenerResponse>;

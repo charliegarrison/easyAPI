@@ -13,6 +13,8 @@ import {
   AuthState,
   PaginationOptions,
   PaginationResult,
+  AggregateOptions,
+  AggregateField,
   RequestMeta,
   ResponseMeta
 } from './types';
@@ -213,6 +215,14 @@ export class EasyAPI {
           return await this.handleLogin(data, isAuthorized);
         case APIOperation.LOGOUT:
           return await this.handleLogout(apiRequest.token, isAuthorized);
+        case APIOperation.AGGREGATE:
+          if (!modelConfig) return { success: false, message: 'Model not found', data: null, isAuthorized };
+          if (!apiRequest.aggregate) return { success: false, message: 'aggregate options required', data: null, isAuthorized };
+          return {
+            success: true,
+            data: await this.aggregateData(model!, query, apiRequest.aggregate),
+            isAuthorized
+          };
         default:
           return {
             success: false,
@@ -251,7 +261,9 @@ export class EasyAPI {
       'login': APIOperation.LOGIN,
       'LOGIN': APIOperation.LOGIN,
       'logout': APIOperation.LOGOUT,
-      'LOGOUT': APIOperation.LOGOUT
+      'LOGOUT': APIOperation.LOGOUT,
+      'aggregate': APIOperation.AGGREGATE,
+      'AGGREGATE': APIOperation.AGGREGATE
     };
     
     return opMap[operation] ?? null;
@@ -270,6 +282,8 @@ export class EasyAPI {
         return model.permissions.update;
       case APIOperation.DELETE:
         return model.permissions.delete;
+      case APIOperation.AGGREGATE:
+        return model.permissions.read;
       default:
         return AuthState.AUTHENTICATED;
     }
@@ -1180,6 +1194,105 @@ export class EasyAPI {
     }
 
     return result.data;
+  }
+
+  /**
+   * Server-side helper to run aggregate queries (GROUP BY, COUNT, MIN, MAX, etc.)
+   *
+   * Usage:
+   *   const rows = await easyAPI.aggregateData('market_data',
+   *     { ticker: 'SPY' },                       // optional WHERE filter
+   *     {
+   *       groupBy: ['ticker'],
+   *       aggregates: [
+   *         { field: 'timestamp', function: 'min', alias: 'earliest' },
+   *         { field: 'timestamp', function: 'max', alias: 'latest' },
+   *         { field: '*',         function: 'count', alias: 'records' },
+   *       ],
+   *       orderBy: 'ticker',
+   *     }
+   *   );
+   */
+  async aggregateData(
+    modelName: string,
+    query: any | undefined,
+    options: AggregateOptions
+  ): Promise<any[]> {
+    const model = this.modelMap.get(modelName);
+    if (!model) {
+      throw new Error(`Unknown model: ${modelName}`);
+    }
+
+    // --- SELECT columns ---
+    const selectParts: string[] = [];
+
+    // Group-by fields
+    for (const field of options.groupBy) {
+      const path = this.buildJsonPath(field);
+      selectParts.push(`${path} AS "${field}"`);
+    }
+
+    // Aggregate expressions
+    for (const agg of options.aggregates) {
+      const expr = this.buildAggregateExpression(agg);
+      selectParts.push(`${expr} AS "${agg.alias}"`);
+    }
+
+    // --- WHERE clause ---
+    const { whereClause, params } = query && Object.keys(query).length > 0
+      ? this.buildWhereClause(query)
+      : { whereClause: 'TRUE', params: [] as any[] };
+
+    // --- GROUP BY ---
+    const groupByParts = options.groupBy.map(f => this.buildJsonPath(f));
+
+    // --- ORDER BY ---
+    let orderByExpr = groupByParts[0] || '1';
+    if (options.orderBy) {
+      // Check if it matches a groupBy field
+      if (options.groupBy.includes(options.orderBy)) {
+        orderByExpr = this.buildJsonPath(options.orderBy);
+      } else {
+        // Might be an alias – reference it directly
+        orderByExpr = `"${options.orderBy}"`;
+      }
+    }
+    const direction = options.orderDirection || 'ASC';
+
+    const sql = [
+      `SELECT ${selectParts.join(', ')}`,
+      `FROM ${modelName}`,
+      `WHERE ${whereClause}`,
+      `GROUP BY ${groupByParts.join(', ')}`,
+      `ORDER BY ${orderByExpr} ${direction}`,
+    ].join(' ');
+
+    const result = await this.pool.query(sql, params);
+    return result.rows;
+  }
+
+  /**
+   * Build a SQL aggregate expression from an AggregateField spec
+   */
+  private buildAggregateExpression(agg: AggregateField): string {
+    const path = agg.field === '*' ? '*' : this.buildJsonPath(agg.field);
+
+    switch (agg.function) {
+      case 'count':
+        return `COUNT(${path})`;
+      case 'countDistinct':
+        return `COUNT(DISTINCT ${path})`;
+      case 'min':
+        return `MIN(${path})`;
+      case 'max':
+        return `MAX(${path})`;
+      case 'sum':
+        return `SUM((${path})::numeric)`;
+      case 'avg':
+        return `AVG((${path})::numeric)`;
+      default:
+        throw new Error(`Unsupported aggregate function: ${agg.function}`);
+    }
   }
 }
 
