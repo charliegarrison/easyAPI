@@ -59,6 +59,9 @@ export interface TableConfig {
   // Whether to add full-text search
   enableFullTextSearch?: boolean;
   fullTextSearchFields?: string[];
+  // Skip the auto-created GIN index on the data column.
+  // Useful for high-volume tables where all queries use expression B-tree indexes.
+  skipGinIndex?: boolean;
 }
 
 export interface AdditionalColumn {
@@ -126,10 +129,10 @@ export class JsonSchemaToPostgres {
    * Generate all SQL scripts for a table configuration
    */
   generateScripts(config: TableConfig): GeneratedScripts {
-    const { tableName, schema, additionalColumns, indexedFields, indexes, enableFullTextSearch, fullTextSearchFields } = config;
+    const { tableName, schema, additionalColumns, indexedFields, indexes, enableFullTextSearch, fullTextSearchFields, skipGinIndex } = config;
 
     const createTable = this.generateCreateTable(tableName, additionalColumns, indexedFields, enableFullTextSearch, fullTextSearchFields);
-    const createIndexes = this.generateIndexes(tableName, indexedFields, indexes, enableFullTextSearch);
+    const createIndexes = this.generateIndexes(tableName, indexedFields, indexes, enableFullTextSearch, skipGinIndex);
     const createTriggers = this.generateTriggers(tableName);
     
     const migration = `-- Migration script for table: ${tableName}
@@ -151,7 +154,7 @@ ${createTable}
 ${createIndexes}
 `;
 
-    const updateScript = this.generateUpdateScript(tableName, additionalColumns, indexedFields, indexes, enableFullTextSearch, fullTextSearchFields);
+    const updateScript = this.generateUpdateScript(tableName, additionalColumns, indexedFields, indexes, enableFullTextSearch, fullTextSearchFields, skipGinIndex);
 
     return {
       createTable,
@@ -231,12 +234,16 @@ ${createIndexes}
     tableName: string,
     indexedFields?: IndexedField[],
     customIndexes?: JsonIndex[],
-    enableFullTextSearch?: boolean
+    enableFullTextSearch?: boolean,
+    skipGinIndex?: boolean
   ): string {
-    const indexStatements: string[] = [
-      `-- GIN index for JSONB queries`,
-      `CREATE INDEX IF NOT EXISTS idx_${tableName}_data_gin ON ${tableName} USING GIN (data);`
-    ];
+    const indexStatements: string[] = [];
+    if (!skipGinIndex) {
+      indexStatements.push(
+        `-- GIN index for JSONB queries`,
+        `CREATE INDEX IF NOT EXISTS idx_${tableName}_data_gin ON ${tableName} USING GIN (data);`
+      );
+    }
 
     // Indexes for generated columns (from indexedFields)
     if (indexedFields) {
@@ -400,7 +407,8 @@ ${createIndexes}
     indexedFields?: IndexedField[],
     customIndexes?: JsonIndex[],
     enableFullTextSearch?: boolean,
-    fullTextSearchFields?: string[]
+    fullTextSearchFields?: string[],
+    skipGinIndex?: boolean
   ): string {
     return `-- Update script for table: ${tableName}
 -- This script can be run multiple times safely (idempotent)
@@ -423,7 +431,7 @@ BEGIN
 END $$;
 
 -- Ensure indexes exist
-${this.generateIndexes(tableName, indexedFields, customIndexes, enableFullTextSearch)}
+${this.generateIndexes(tableName, indexedFields, customIndexes, enableFullTextSearch, skipGinIndex)}
 `;
   }
 
